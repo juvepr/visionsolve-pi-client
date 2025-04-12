@@ -7,4 +7,4 @@ This repository contains the client software for connecting a Raspberry Pi with 
 Connect to your Raspberry Pi via SSH and run:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/yourusername/visionsolve-pi-client/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/juvepr/visionsolve-pi-client/main/install.sh | bash
