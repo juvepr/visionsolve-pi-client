@@ -26,10 +26,36 @@ if ! grep -q "Raspberry Pi" /proc/device-tree/model 2>/dev/null; then
     exit 1
 fi
 
+# Detect camera status
+if [ "$NO_CAMERA" == "1" ]; then
+    print_yellow "Camera support is DISABLED via NO_CAMERA environment variable"
+    CAMERA_STATUS="disabled"
+else
+    # Try to detect camera hardware
+    if vcgencmd get_camera | grep -q "detected=1"; then
+        print_green "Camera hardware detected!"
+        CAMERA_STATUS="enabled"
+    else
+        print_yellow "No camera hardware detected. Running in camera-less mode."
+        CAMERA_STATUS="disabled"
+        NO_CAMERA="1"
+    fi
+fi
+
 # Prompt for configuration
 echo "Please enter your VisionSolve server information:"
 read -p "Server address (e.g., 192.168.1.10): " SERVER_ADDRESS
 read -p "API key: " API_KEY
+read -p "Device name (default: Raspberry Pi Camera): " DEVICE_NAME
+
+# Set default device name if not provided
+if [ -z "$DEVICE_NAME" ]; then
+    if [ "$CAMERA_STATUS" == "disabled" ]; then
+        DEVICE_NAME="Raspberry Pi (No Camera)"
+    else
+        DEVICE_NAME="Raspberry Pi Camera"
+    fi
+fi
 
 # Generate a unique device ID if not provided
 if [ -z "$DEVICE_ID" ]; then
@@ -40,7 +66,13 @@ fi
 # Install dependencies
 print_yellow "Installing dependencies..."
 sudo apt update
-sudo apt install -y python3-pip python3-venv git python3-picamera2 libopenjp2-7
+sudo apt install -y python3-pip python3-venv git
+
+# If camera is enabled, install camera libraries
+if [ "$CAMERA_STATUS" == "enabled" ]; then
+    print_yellow "Installing camera libraries..."
+    sudo apt install -y python3-picamera2 libopenjp2-7 libcamera-apps
+fi
 
 # Create project directory
 print_yellow "Setting up project directory..."
@@ -70,7 +102,11 @@ WEBSOCKET_SERVER=ws://${SERVER_ADDRESS}:5001
 
 # Device settings
 DEVICE_ID=${DEVICE_ID}
+DEVICE_NAME="${DEVICE_NAME}"
 API_KEY=${API_KEY}
+
+# Camera settings
+NO_CAMERA=${NO_CAMERA}
 
 # Streaming settings
 STREAM_RESOLUTION_WIDTH=640
@@ -105,9 +141,19 @@ sudo systemctl daemon-reload
 sudo systemctl enable visionsolve.service
 sudo systemctl start visionsolve.service
 
-print_green "================================================"
-print_green "Installation complete! Your device ID is: $DEVICE_ID"
-print_green "The service is now running and will start automatically on boot."
-print_green "To check status: sudo systemctl status visionsolve"
-print_green "To view logs: journalctl -u visionsolve -f"
-print_green "================================================"
+if [ "$CAMERA_STATUS" == "disabled" ]; then
+    print_green "================================================"
+    print_green "Installation complete! Your device ID is: $DEVICE_ID"
+    print_green "The service is running in CAMERA-LESS MODE."
+    print_green "The service is configured to start automatically on boot."
+    print_green "To check status: sudo systemctl status visionsolve"
+    print_green "To view logs: sudo journalctl -u visionsolve -f"
+    print_green "================================================"
+else
+    print_green "================================================"
+    print_green "Installation complete! Your device ID is: $DEVICE_ID"
+    print_green "The service is now running and will start automatically on boot."
+    print_green "To check status: sudo systemctl status visionsolve"
+    print_green "To view logs: sudo journalctl -u visionsolve -f"
+    print_green "================================================"
+fi
