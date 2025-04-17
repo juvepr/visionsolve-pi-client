@@ -36,6 +36,7 @@ DEVICE_ID = os.environ.get('DEVICE_ID', f"pi-{uuid.uuid4().hex[:8]}")
 API_SERVER = os.environ.get('API_SERVER', 'http://localhost:4000')
 WEBSOCKET_SERVER = os.environ.get('WEBSOCKET_SERVER', 'ws://localhost:5001')
 API_KEY = os.environ.get('API_KEY', 'default-api-key')
+NO_CAMERA = os.environ.get('NO_CAMERA', '0') == '1'  # Check if camera is disabled
 
 # Frame settings
 STREAM_RESOLUTION = (
@@ -72,12 +73,17 @@ async def connect_and_register():
         try:
             # Register with the API server
             logger.info(f"Registering device with API server: {API_SERVER}")
+            
+            # Include camera status in registration
+            camera_status = "disabled" if NO_CAMERA else "enabled"
+            
             response = requests.post(
                 f"{API_SERVER}/api/register-device",
                 json={
                     "device_id": DEVICE_ID,
                     "device_type": "raspberry_pi",
                     "camera_module": "Camera Module 3",
+                    "camera_status": camera_status,
                     "hardware_info": {
                         "model": get_pi_model(),
                         "system_info": get_system_info()
@@ -136,8 +142,27 @@ async def capture_and_send_image(client_id=None):
     """
     global camera, websocket
     
-    if not camera or not websocket:
-        logger.error("Camera or WebSocket not initialized")
+    if not websocket:
+        logger.error("WebSocket not initialized")
+        return False
+    
+    # Handle the case when no camera is available
+    if NO_CAMERA or not camera or not camera.initialized:
+        logger.warning("Cannot capture image - camera not available")
+        
+        # Send error message to the client
+        if client_id:
+            try:
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "message": "Camera hardware not available",
+                    "device_id": DEVICE_ID,
+                    "requesting_client_id": client_id,
+                    "timestamp": int(time.time())
+                }))
+            except Exception as e:
+                logger.error(f"Error sending error message: {str(e)}")
+        
         return False
     
     try:
@@ -176,8 +201,26 @@ async def start_video_stream(client_id):
     """Start streaming video frames to a specific client"""
     global camera, websocket, stop_event, active_streams
     
-    if not camera or not websocket:
-        logger.error("Camera or WebSocket not initialized")
+    if not websocket:
+        logger.error("WebSocket not initialized")
+        return
+    
+    # Handle the case when no camera is available
+    if NO_CAMERA or not camera or not camera.initialized:
+        logger.warning(f"Cannot start stream for client {client_id} - camera not available")
+        
+        # Send error message to the client
+        try:
+            await websocket.send(json.dumps({
+                "type": "error",
+                "message": "Camera hardware not available",
+                "device_id": DEVICE_ID,
+                "client_id": client_id,
+                "timestamp": int(time.time())
+            }))
+        except Exception as e:
+            logger.error(f"Error sending error message: {str(e)}")
+        
         return
     
     logger.info(f"Starting video stream for client {client_id}")
@@ -319,11 +362,16 @@ async def send_status_updates():
     while not stop_event.is_set():
         try:
             if websocket and websocket.open:
+                camera_status = "disabled" if NO_CAMERA else (
+                    "enabled" if camera and camera.initialized else "error"
+                )
+                
                 battery = check_battery()
                 await websocket.send(json.dumps({
                     "type": "status_update",
                     "device_id": DEVICE_ID,
                     "battery": battery,
+                    "camera_status": camera_status,
                     "uptime": get_uptime(),
                     "timestamp": int(time.time())
                 }))
@@ -398,13 +446,13 @@ async def main_loop():
     global camera, websocket, stop_event
     
     try:
-        # Initialize the camera
-        if not camera:
+        # Initialize the camera if not disabled
+        if not NO_CAMERA and not camera:
             camera = PiCamera()
             if not await camera.initialize():
-                logger.error("Failed to initialize camera")
-                stop_event.set()
-                return
+                logger.warning("Failed to initialize camera - will run in camera-less mode")
+        else:
+            logger.info("Running in camera-less mode (NO_CAMERA=1)")
         
         # Connect to server and register device
         if not await connect_and_register():
@@ -448,6 +496,7 @@ async def main():
         )
     
     logger.info(f"Starting Pi Camera Client (Device ID: {DEVICE_ID})")
+    logger.info(f"Camera mode: {'DISABLED' if NO_CAMERA else 'ENABLED'}")
     
     # Run the main loop until stopped
     while not stop_event.is_set():
