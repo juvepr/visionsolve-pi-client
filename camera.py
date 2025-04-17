@@ -20,9 +20,16 @@ class PiCamera:
     def __init__(self):
         self.camera = None
         self.initialized = False
-        self.camera_type = None  # 'picamera2', 'legacy', or None
+        self.camera_type = None  # 'picamera2', 'legacy', 'disabled', or None
         self.temp_dir = os.environ.get('TEMP_IMAGE_DIR', 'temp_images')
         
+        # Check if camera is disabled via environment variable
+        self.no_camera = os.environ.get('NO_CAMERA', '0') == '1'
+        if self.no_camera:
+            logger.info("Camera support disabled via NO_CAMERA environment variable")
+            self.camera_type = 'disabled'
+            return
+            
         # Ensure temp directory exists
         os.makedirs(self.temp_dir, exist_ok=True)
         
@@ -39,6 +46,11 @@ class PiCamera:
         Returns:
             bool: True if successful, False otherwise
         """
+        # If camera is disabled, skip initialization
+        if self.no_camera:
+            logger.info("Camera initialization skipped (NO_CAMERA=1)")
+            return False
+            
         self.current_attempt += 1
         
         try:
@@ -147,8 +159,8 @@ class PiCamera:
         Returns:
             str: Path to the captured image, or None if failed
         """
-        if not self.initialized or not self.camera:
-            logger.error("Camera not initialized")
+        if self.no_camera or not self.initialized or not self.camera:
+            logger.error("Camera not initialized or disabled")
             return None
             
         try:
@@ -237,8 +249,8 @@ class PiCamera:
         Returns:
             numpy.ndarray: The captured frame, or None if failed
         """
-        if not self.initialized or not self.camera:
-            logger.error("Camera not initialized")
+        if self.no_camera or not self.initialized or not self.camera:
+            logger.error("Camera not initialized or disabled")
             return None
             
         try:
@@ -301,8 +313,8 @@ class PiCamera:
                 self.camera = None
                 self.initialized = False
                 
-            # Only clean up files if not partial cleanup
-            if not partial:    
+            # Only clean up files if not partial cleanup and not in no_camera mode
+            if not partial and not self.no_camera:    
                 # Clean up any temporary images
                 for filename in os.listdir(self.temp_dir):
                     filepath = os.path.join(self.temp_dir, filename)
@@ -325,6 +337,10 @@ class PiCamera:
         Returns:
             bool: True if camera is healthy or was successfully reinitialized
         """
+        if self.no_camera:
+            logger.info("Camera health check skipped (NO_CAMERA=1)")
+            return False
+            
         if not self.initialized or not self.camera:
             logger.warning("Camera not initialized during health check")
             return await self.initialize()
@@ -345,8 +361,4 @@ class PiCamera:
                 return await self.initialize()
                 
         except Exception as e:
-            logger.error(f"Camera health check error: {str(e)}")
-            
-            # Try to reinitialize
-            await self.cleanup(partial=True)
-            return await self.initialize()
+            logger.e
