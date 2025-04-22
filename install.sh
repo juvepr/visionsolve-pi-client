@@ -1,5 +1,6 @@
+
 #!/bin/bash
-# VisionSolve Raspberry Pi Client Installer
+# pi-client/update.sh
 
 # Print colored messages
 print_green() {
@@ -16,7 +17,7 @@ print_red() {
 
 # Banner
 print_green "========================================="
-print_green "  VisionSolve Raspberry Pi Client Setup  "
+print_green "  VisionSolve Raspberry Pi Client Update  "
 print_green "========================================="
 echo ""
 
@@ -26,87 +27,98 @@ if ! grep -q "Raspberry Pi" /proc/device-tree/model 2>/dev/null; then
     exit 1
 fi
 
-# Detect camera status
-if [ "$NO_CAMERA" == "1" ]; then
-    print_yellow "Camera support is DISABLED via NO_CAMERA environment variable"
-    CAMERA_STATUS="disabled"
+# Get current installed version if available
+if [ -f ~/visionsolve-client/version.txt ]; then
+    CURRENT_VERSION=$(cat ~/visionsolve-client/version.txt)
+    print_yellow "Current installed version: $CURRENT_VERSION"
 else
-    # Try to detect camera hardware
-    if vcgencmd get_camera | grep -q "detected=1"; then
-        print_green "Camera hardware detected!"
-        CAMERA_STATUS="enabled"
-    else
-        print_yellow "No camera hardware detected. Running in camera-less mode."
-        CAMERA_STATUS="disabled"
-        NO_CAMERA="1"
+    print_yellow "No existing version found. Will perform a fresh installation."
+    CURRENT_VERSION="0.0.0"
+fi
+
+# Get server info from existing config or prompt
+if [ -f ~/visionsolve-client/.env ]; then
+    source ~/visionsolve-client/.env
+    SERVER_ADDRESS=$(echo $API_SERVER | sed 's|http://||' | sed 's|:.*||')
+    print_yellow "Using existing server configuration: $SERVER_ADDRESS"
+else
+    print_yellow "Please enter your VisionSolve server information:"
+    read -p "Server address (e.g., 192.168.1.10): " SERVER_ADDRESS
+    read -p "API key: " API_KEY
+    
+    if [ -z "$API_KEY" ]; then
+        print_red "API key is required for authentication."
+        exit 1
     fi
 fi
 
-# Prompt for configuration
-echo "Please enter your VisionSolve server information:"
-read -p "Server address (e.g., 192.168.1.10): " SERVER_ADDRESS
-read -p "API key: " API_KEY
-read -p "Device name (default: Raspberry Pi Camera): " DEVICE_NAME
+# Create temp directory for downloads
+mkdir -p ~/visionsolve-temp
+cd ~/visionsolve-temp
 
-# Set default device name if not provided
-if [ -z "$DEVICE_NAME" ]; then
-    if [ "$CAMERA_STATUS" == "disabled" ]; then
-        DEVICE_NAME="Raspberry Pi (No Camera)"
-    else
-        DEVICE_NAME="Raspberry Pi Camera"
-    fi
+# Check for updates
+print_yellow "Checking for updates..."
+
+# In a real implementation, this would contact the update server
+# For demo purposes, we'll simulate an update check
+NEW_VERSION="1.1.0"
+
+if [ "$CURRENT_VERSION" == "$NEW_VERSION" ]; then
+    print_green "You already have the latest version installed."
+    rm -rf ~/visionsolve-temp
+    exit 0
 fi
 
-# Generate a unique device ID if not provided
-if [ -z "$DEVICE_ID" ]; then
-    HOSTNAME=$(hostname)
-    DEVICE_ID="pi-$(echo $HOSTNAME | md5sum | head -c 8)"
+print_green "New version available: $NEW_VERSION"
+print_yellow "Downloading update package..."
+
+# In a real implementation, this would download from your server
+# For demo, we'll clone the repository
+git clone https://github.com/yourusername/visionsolve-pi-client.git
+
+if [ $? -ne 0 ]; then
+    print_red "Failed to download update package."
+    rm -rf ~/visionsolve-temp
+    exit 1
 fi
 
-# Install dependencies
-print_yellow "Installing dependencies..."
-sudo apt update
-sudo apt install -y python3-pip python3-venv git
+# Stop current service
+print_yellow "Stopping VisionSolve service..."
+sudo systemctl stop visionsolve.service
 
-# If camera is enabled, install camera libraries
-if [ "$CAMERA_STATUS" == "enabled" ]; then
-    print_yellow "Installing camera libraries..."
-    sudo apt install -y python3-picamera2 libopenjp2-7 libcamera-apps
+# Backup current config
+if [ -f ~/visionsolve-client/.env ]; then
+    cp ~/visionsolve-client/.env ~/visionsolve-temp/.env.backup
+    print_yellow "Current configuration backed up."
 fi
 
-# Create project directory
-print_yellow "Setting up project directory..."
-mkdir -p ~/visionsolve-client
-cd ~/visionsolve-client
+# Create or update installation directory
+if [ ! -d ~/visionsolve-client ]; then
+    mkdir -p ~/visionsolve-client
+fi
 
-# Set up virtual environment
-print_yellow "Creating Python virtual environment..."
-python3 -m venv venv
-source venv/bin/activate
+# Copy new files
+print_yellow "Installing new version..."
+cp -r ~/visionsolve-temp/visionsolve-pi-client/* ~/visionsolve-client/
 
-# Install Python dependencies
-print_yellow "Installing Python packages..."
-pip install websockets requests python-dotenv pillow numpy
-
-# Download client code from GitHub
-print_yellow "Downloading client code..."
-curl -O https://raw.githubusercontent.com/juvepr/visionsolve-pi-client/main/camera.py
-curl -O https://raw.githubusercontent.com/juvepr/visionsolve-pi-client/main/client.py
-
-# Create .env configuration file
-print_yellow "Creating configuration file..."
-cat > .env << EOL
+# Restore config if it exists
+if [ -f ~/visionsolve-temp/.env.backup ]; then
+    cp ~/visionsolve-temp/.env.backup ~/visionsolve-client/.env
+    print_yellow "Configuration restored."
+else
+    # Create new config file
+    print_yellow "Creating new configuration file..."
+    cat > ~/visionsolve-client/.env << EOL
 # Server connection
 API_SERVER=http://${SERVER_ADDRESS}:4000
 WEBSOCKET_SERVER=ws://${SERVER_ADDRESS}:5001
 
 # Device settings
-DEVICE_ID=${DEVICE_ID}
-DEVICE_NAME="${DEVICE_NAME}"
+DEVICE_ID=${DEVICE_ID:-$(hostname | md5sum | head -c 8 | xargs echo "pi-")}
 API_KEY=${API_KEY}
 
 # Camera settings
-NO_CAMERA=${NO_CAMERA}
+NO_CAMERA=${NO_CAMERA:-0}
 
 # Streaming settings
 STREAM_RESOLUTION_WIDTH=640
@@ -115,11 +127,20 @@ STREAM_QUALITY=70
 STREAM_FPS=10
 
 # Debug
-DEBUG=true
+DEBUG=false
 EOL
+fi
 
-# Create systemd service for auto-start
-print_yellow "Setting up auto-start service..."
+# Update Python dependencies
+print_yellow "Updating Python dependencies..."
+cd ~/visionsolve-client
+pip3 install -r requirements.txt
+
+# Store new version
+echo "$NEW_VERSION" > ~/visionsolve-client/version.txt
+
+# Update systemd service
+print_yellow "Updating system service..."
 sudo bash -c "cat > /etc/systemd/system/visionsolve.service << EOL
 [Unit]
 Description=VisionSolve Pi Client
@@ -136,24 +157,16 @@ RestartSec=10
 WantedBy=multi-user.target
 EOL"
 
-# Enable and start the service
+# Reload systemd and restart service
 sudo systemctl daemon-reload
 sudo systemctl enable visionsolve.service
 sudo systemctl start visionsolve.service
 
-if [ "$CAMERA_STATUS" == "disabled" ]; then
-    print_green "================================================"
-    print_green "Installation complete! Your device ID is: $DEVICE_ID"
-    print_green "The service is running in CAMERA-LESS MODE."
-    print_green "The service is configured to start automatically on boot."
-    print_green "To check status: sudo systemctl status visionsolve"
-    print_green "To view logs: sudo journalctl -u visionsolve -f"
-    print_green "================================================"
-else
-    print_green "================================================"
-    print_green "Installation complete! Your device ID is: $DEVICE_ID"
-    print_green "The service is now running and will start automatically on boot."
-    print_green "To check status: sudo systemctl status visionsolve"
-    print_green "To view logs: sudo journalctl -u visionsolve -f"
-    print_green "================================================"
-fi
+# Clean up
+rm -rf ~/visionsolve-temp
+
+print_green "================================================"
+print_green "Update complete! Now running version $NEW_VERSION"
+print_green "The service has been restarted automatically."
+print_green "To check status: sudo systemctl status visionsolve"
+print_green "================================================"
